@@ -60,7 +60,15 @@ Compilations/YYYY - Album/NN - Artist - Title.flac
 
 ## Phases
 
-- [ ] **Phase 0:** Manual end-to-end. Install whipper + beets, mount NFS, characterize drive, rip one test CD manually.
+- [~] **Phase 0:** Manual end-to-end. Install whipper + beets, mount NFS, characterize drive, rip one test CD manually.
+  - [x] GitHub repo + initial README
+  - [x] NFS export from TrueNAS (Maproot=apps)
+  - [x] NFS mount on arch-box with systemd automount fstab entry
+  - [x] CDRips directory structure on NAS
+  - [x] Whipper installed (Arch package)
+  - [x] LG GP65NB60 characterized: cache defeat OK, read offset +6
+  - [ ] Beets installed and configured
+  - [ ] Manual test rip end-to-end
 - [ ] **Phase 1:** Manual orchestration. Document the exact CLI commands that produce a finished rip.
 - [ ] **Phase 2:** Python orchestrator. Wrap whipper + beets in a single script with logging, config, error handling.
 - [ ] **Phase 3:** Hands-off automation. udev rule + systemd service triggers the orchestrator on disc insertion.
