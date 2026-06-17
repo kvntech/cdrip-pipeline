@@ -73,7 +73,7 @@ Compilations/YYYY - Album/NN - Artist - Title.flac
     - All 6 tracks AccurateRip-verified at confidence 17-18
     - Files landed at `/mnt/tank/music/library/FLAC/CDRips/Grant Green/2005 - Feelin' the Spirit/`
     - Naming pattern verified: `NN - Artist - Title.flac`
-- [ ] **Phase 1:** Document the exact CLI sequence for a manual rip (becomes the spec for Phase 2's orchestrator).
+- [~] **Phase 1:** Document the exact CLI sequence for a manual rip (becomes the spec for Phase 2's orchestrator).
 - [ ] **Phase 2:** Python orchestrator. Wrap whipper + beets in a single script with logging, config, error handling.
 - [ ] **Phase 3:** Hands-off automation. udev rule + systemd service triggers the orchestrator on disc insertion.
 - [ ] **Phase 4:** Polish. Notifications (ntfy / Home Assistant), TUI status, full documentation.
