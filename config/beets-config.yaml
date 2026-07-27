@@ -41,7 +41,8 @@ import:
   # Leave OFF during Phase 0 so we see what's happening; turn ON in Phase 3
   quiet: no
   # Resume interrupted imports
-  resume: ask
+  resume: yes
+  quiet_fallback: asis
 match:
   strong_rec_thresh: 0.10
   medium_rec_thresh: 0.25
