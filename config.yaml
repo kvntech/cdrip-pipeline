@@ -31,11 +31,10 @@ beets_config: "~/.config/beets/config.yaml"
 # form that actually reads your user config, not /root/.config/beets/.
 beets_use_sudo: true
 
-# Known issue A: beets autotagger returns zero MusicBrainz candidates despite
-# valid whipper-written MB IDs. Until that's root-caused, this just controls
-# the reminder message printed before the interactive beets import — the
-# actual workaround ("Enter Id" or "Use as-is") happens live in beets' prompt.
-known_issue_a_reminder: true
+# Known issue A: RESOLVED 2026-07-27 (missing `musicbrainz` plugin + bogus
+# `search_ids` config key in beets' config -- see README.md). Set to true
+# only if you want a defensive reminder printed before each import.
+known_issue_a_reminder: false
 
 # Destination folder auto-detection: after beets import, this script looks
 # for the most recently modified album directory under
@@ -43,14 +42,15 @@ known_issue_a_reminder: true
 # then asks you to confirm/correct it.
 dest_autodetect_window_minutes: 15
 
-# Navidrome rescan (Subsonic-compatible API). Disabled by default since the
-# Phase 1 runbook hasn't verified this step yet ("[VERIFY ON LIVE RIP]
-# current method: auto-scan interval vs manual trigger").
+# Navidrome rescan (Subsonic-compatible API). Verified working live
+# 2026-07-27 via startScan/getScanStatus (scan completed cleanly: count 1144,
+# folderCount 83). Credentials are NOT stored here -- this repo is public.
+# Set NAVIDROME_USER / NAVIDROME_PASS in the environment before running the
+# orchestrator (see .env.example). Phase 3's systemd service should load
+# them via EnvironmentFile=.
 navidrome:
-  enabled: false
+  enabled: true
   url: "http://192.168.8.60:4533"
-  username: ""
-  password: ""
 
 # Staging cleanup
 prompt_before_cleanup: true

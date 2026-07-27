@@ -6,13 +6,22 @@ Wraps whipper + beets into one command per docs/phase1-runbook.md:
 stage -> rip -> import/tag -> copy log+cue -> (optional) Navidrome rescan
 -> clean staging.
 
-This directly implements the manual runbook, including its two documented
-workarounds:
-  - Known issue A: beets MusicBrainz autotagger returns zero candidates.
-    Workaround happens live inside beets' own interactive prompt (choose
-    "Enter Id" and paste the MB release URL/ID, or "Use as-is").
+This directly implements the manual runbook, including its one remaining
+documented workaround:
   - Known issue B: beets-extrafiles crashes on cli_exit, so .log/.cue files
     are copied by this script instead of relying on that plugin.
+
+Known issue A (beets MusicBrainz autotagger returning zero candidates) was
+root-caused and fixed 2026-07-27: the `musicbrainz` plugin was missing from
+beets' plugins list, and a bogus `search_ids` line under `import:` in the
+beets config was feeding literal field names to beets as if they were real
+MBIDs. See README.md for details. Automatic MusicBrainz matching during
+`beet import` now works without manual intervention.
+
+Navidrome rescan (Subsonic API `startScan`/`getScanStatus`) was verified
+working live 2026-07-27. Credentials are read from the NAVIDROME_USER /
+NAVIDROME_PASS environment variables, never from config.yaml, since this
+repo is public.
 
 Run on arch-box, not on the sandboxed dev machine this was written in.
 
@@ -22,6 +31,9 @@ Usage:
     python3 ripper_orchestrator.py --keep-staging   # skip cleanup step
     python3 ripper_orchestrator.py --skip-navidrome # skip rescan even if enabled in config
     python3 ripper_orchestrator.py --config other.yaml
+
+Environment variables:
+    NAVIDROME_USER, NAVIDROME_PASS   required if navidrome.enabled in config.yaml
 """
 
 import argparse
@@ -128,8 +140,8 @@ def preflight_checks(cfg, log, dry_run) -> bool:
         log.error("`whipper drive list` failed:\n" + (result.stderr or ""))
         ok = False
 
-    # beets sane (expects 7 plugins per README: chroma, embedart, extrafiles,
-    # fetchart, inline, replaygain, scrub)
+    # beets sane (expects 7 plugins per README: chroma, embedart, fetchart,
+    # inline, musicbrainz, replaygain, scrub)
     result = run(["beet", "version"], log, dry_run, capture_output=True, text=True)
     if not dry_run:
         if result.returncode != 0:
@@ -214,12 +226,14 @@ def rip(cfg, log, dry_run) -> str:
 
 def import_beets(cfg, log, dry_run, album_path: str):
     log.info("== Import + tag (beets) ==")
-    if cfg.get("known_issue_a_reminder", True):
+    if cfg.get("known_issue_a_reminder", False):
         log.info(
-            "Reminder (known issue A): if beets shows 'Evaluating 0 candidates' "
-            "despite valid MusicBrainz tags from whipper, choose 'Enter Id' at "
-            "the prompt and paste the release URL/ID, or 'Use as-is' to accept "
-            "whipper's tags directly."
+            "Reminder (known issue A, resolved 2026-07-27): if beets ever shows "
+            "'Evaluating 0 candidates' again, check that the `musicbrainz` plugin "
+            "is in beets' plugins list and that there's no stray `search_ids` line "
+            "under `import:` in its config -- both caused this before. 'Use as-is' "
+            "is now a fallback for discs genuinely absent from MusicBrainz, not the "
+            "expected path."
         )
 
     beets_config = cfg["beets_config"]
@@ -357,18 +371,32 @@ def trigger_navidrome_rescan(cfg, log, dry_run, skip_flag: bool):
         log.error("`requests` not installed — cannot call Navidrome API. pip install requests")
         return
 
+    # Credentials come from the environment, never from config.yaml -- this
+    # repo is public and config.yaml is tracked in git. Verified working live
+    # 2026-07-27 via the Subsonic startScan/getScanStatus endpoints (scan
+    # completed cleanly: count 1144, folderCount 83).
+    username = os.environ.get("NAVIDROME_USER")
+    password = os.environ.get("NAVIDROME_PASS")
+    if not username or not password:
+        log.error(
+            "Navidrome rescan enabled but NAVIDROME_USER/NAVIDROME_PASS are not "
+            "set in the environment. Skipping rescan. (Do not put credentials in "
+            "config.yaml -- this repo is public.)"
+        )
+        return
+
     # Subsonic API auth: token = md5(password + salt)
     salt = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
-    token = hashlib.md5((nav["password"] + salt).encode()).hexdigest()
+    token = hashlib.md5((password + salt).encode()).hexdigest()
     params = {
-        "u": nav["username"],
+        "u": username,
         "t": token,
         "s": salt,
         "v": "1.16.1",
         "c": "cdrip-pipeline",
         "f": "json",
     }
-    url = nav["url"].rstrip("/") + "/rest/startScan.view"
+    url = nav["url"].rstrip("/") + "/rest/startScan"
     log.info(f"== Navidrome rescan == GET {url}")
     if dry_run:
         return
