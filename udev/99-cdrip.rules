@@ -1,0 +1,15 @@
+# cdrip-pipeline: trigger the ripping pipeline when an audio CD is inserted
+# into /dev/sr0. ID_FS_TYPE=="" is the audio-CD signal (no filesystem present,
+# unlike a data disc, which would have one).
+#
+# NOT YET VERIFIED LIVE. Before trusting this, test with:
+#   udevadm monitor --udev --subsystem-match=block
+# in one terminal while inserting/ejecting a disc in another, and confirm you
+# actually see a `change` event with ID_CDROM=1 and an empty ID_FS_TYPE. Some
+# drives/kernels report this differently -- adjust the match conditions if
+# the event looks different on arch-box.
+#
+# Install: sudo cp this file to /etc/udev/rules.d/99-cdrip.rules, then
+#   sudo udevadm control --reload-rules
+
+ACTION=="change", SUBSYSTEM=="block", KERNEL=="sr0", ENV{ID_CDROM}=="1", ENV{ID_FS_TYPE}=="", ENV{DISK_MEDIA_CHANGE}=="1", TAG+="systemd", ENV{SYSTEMD_WANTS}="cdrip.service"

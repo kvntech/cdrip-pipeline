@@ -82,10 +82,44 @@ Compilations/YYYY - Album/NN - Artist - Title.flac
 - [x] **Phase 2:** Python orchestrator (`ripper_orchestrator.py`). Wraps whipper + beets
   with logging, config, `--dry-run`, and error handling. Confirmed working end-to-end
   across 3 real discs, including automatic recovery/handling of Known Issues A-C below.
-- [ ] **Phase 3:** Hands-off automation. udev rule + systemd service triggers the orchestrator on disc insertion.
+- [x] **Phase 3:** Hands-off automation. udev rule + systemd service triggers the
+  orchestrator on disc insertion. Confirmed working end-to-end live 2026-07-27
+  (Das EFX - Dead Serious): a real physical disc insertion fired the udev rule,
+  which started `cdrip.service`, which ran the full pipeline (rip -> tag ->
+  log/cue -> art -> Navidrome rescan -> cleanup) completely unattended. Three
+  real bugs were found and fixed during this testing -- see Known Issues.
 - [ ] **Phase 4:** Polish. Notifications (ntfy / Home Assistant), TUI status, full documentation.
 
 ## Known issues (carried into later phases)
+
+- **RESOLVED (2026-07-27) — `cdrip.service` hardcoded the wrong repo path**
+  (`/home/kevin/cdrip-pipeline` instead of the actual clone location,
+  `/home/kevin/projects/cdrip-pipeline`), causing `Failed to load environment
+  files` and `Failed to spawn 'start' task` on the very first udev-triggered
+  run. Fixed by correcting `WorkingDirectory`/`EnvironmentFile`/`ExecStart` in
+  both the installed unit and the repo's `systemd/cdrip.service`.
+- **RESOLVED (2026-07-27) — `rip()` couldn't find the ripped album folder**
+  after the first-ever rip in a given staging directory. It used to diff
+  `os.listdir(staging_dir)` before/after the rip looking for a newly-created
+  top-level entry, but whipper's wrapper folder (e.g. `album`) is reused
+  across runs, not recreated -- so it's never actually "new" again after the
+  first rip. Interactive runs papered over this because the fallback prompt
+  lists every folder (not just new ones) and a human just picked the obvious
+  one each time; `--non-interactive` had no one to do that, so it surfaced
+  immediately. **Fix: walk the whole staging tree and use whichever folder
+  actually contains `.flac` files with the newest mtime**, regardless of
+  wrapper naming or reuse.
+- **RESOLVED (2026-07-27) — `sudo`-prefixed commands fail instantly under
+  systemd** (`beet import`, `beet fetchart`, the log/cue `cp`) with `sudo: a
+  terminal is required to read the password`. Every interactive test that
+  night had a real terminal for `sudo` to prompt on (or a cached credential);
+  systemd has no TTY at all, so this was always going to break the first time
+  Phase 3 ran genuinely unattended. **Fix: a narrowly-scoped passwordless-sudo
+  rule** in `/etc/sudoers.d/cdrip-pipeline` for exactly `/usr/bin/beet` and
+  `/usr/bin/cp` (not a blanket `NOPASSWD: ALL`) -- see
+  `docs/phase3-runbook.md` for the exact setup and how to verify it with
+  `sudo -n`, which mimics no-TTY sudo so a cached terminal credential can't
+  give a false pass.
 
 - **RESOLVED (2026-07-27) — Beets autotagger returned "no candidates" for every
   MusicBrainz lookup.** Root cause was two stacked config problems, not the suspected

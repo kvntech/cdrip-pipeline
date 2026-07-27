@@ -1,0 +1,20 @@
+[Unit]
+Description=cdrip-pipeline: automated CD rip (triggered by udev on disc insertion)
+After=network-online.target mnt-tank-music.mount
+Requires=mnt-tank-music.mount
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+User=kevin
+WorkingDirectory=/home/kevin/projects/cdrip-pipeline
+EnvironmentFile=/home/kevin/projects/cdrip-pipeline/.env
+ExecStart=/usr/bin/python3 /home/kevin/projects/cdrip-pipeline/ripper_orchestrator.py --non-interactive
+TimeoutStartSec=0
+StandardOutput=journal
+StandardError=journal
+
+# Not in [Install]/enabled at boot on purpose -- this unit is meant to be
+# started ONLY by the udev rule (99-cdrip.rules), which sets SYSTEMD_WANTS.
+# `systemctl enable cdrip.service` is not needed and would be misleading
+# (there's no boot-time trigger for it).
