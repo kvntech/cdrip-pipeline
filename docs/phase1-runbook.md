@@ -1,29 +1,44 @@
 # Phase 1 Runbook: Manual CD Rip to Tagged FLAC on NAS
 
-Status: draft v1, reconstructed from Phase 0. Lines marked [VERIFY ON LIVE RIP]
-must be confirmed during the next real rip before this runbook is considered final.
+Status: v2, confirmed via three live rips on 2026-07-26 (Ry Cooder & Manuel
+Galbán — Mambo sinuendo; Reflection Eternal — Train of Thought; John Coltrane
+— Live at Birdland), run through the Phase 2 orchestrator. All items
+originally marked [VERIFY ON LIVE RIP] are resolved below except the
+Navidrome rescan trigger, which is still untested (rescan is disabled in the
+orchestrator config pending that verification).
 
 ## Purpose
 Exact, repeatable manual procedure that takes a CD from insertion to a tagged FLAC
 album in the Navidrome library. This is the spec the Phase 2 Python orchestrator
-will implement.
+implements (see `ripper_orchestrator.py`).
 
 ## Environment
 - Host: arch-box (EndeavourOS, ThinkCentre M700 Tiny), 192.168.8.6
 - Drive: LG GP65NB60 external USB, device /dev/sr0
 - whipper config: ~/.config/whipper/whipper.conf (read offset +6, cache defeat on)
 - beets: 2.8.0 on Python 3.14.3
-  plugins: chroma, embedart, extrafiles, fetchart, inline, replaygain, scrub
+  plugins: chroma, embedart, fetchart, inline, replaygain, scrub
+  (`extrafiles` removed — see Known issue B)
 - Staging (local): ~/cd-rips/staging/
 - Library (NFS from TrueNAS, Maproot=apps): /mnt/tank/music/library/FLAC/CDRips/
 - Navidrome scan root: /mnt/tank/music/library/
 
 ## Pre-flight checks
-1. NFS mounted:        mountpoint /mnt/tank/music/library
-   If not, wake the automount: ls /mnt/tank/music/library
+1. **NFS mounted:** `findmnt /mnt/tank/music` — check the mount unit's actual
+   target, **not** `/mnt/tank/music/library`. `library` is a subfolder inside
+   the mount, not the mountpoint itself; `os.path.ismount()` (and `mountpoint`)
+   only ever return true for the exact path fstab mounts at. Confirmed fstab
+   entry:
+       192.168.8.20:/mnt/tank/music  /mnt/tank/music  nfs  defaults,_netdev,nofail,x-systemd.automount,x-systemd.idle-timeout=600  0  0
+   If the automount unit doesn't show up in
+   `systemctl list-units --type=mount,automount`, it likely just hasn't been
+   (re)generated since the fstab entry was added/changed — run
+   `sudo systemctl daemon-reload`, then `sudo mount /mnt/tank/music` to
+   confirm it actually mounts.
 2. Drive present:      ls -l /dev/sr0
 3. whipper sees drive: whipper drive list
-4. beets sane:         beet version   (confirm 7 plugins load)
+4. beets sane:         beet version   (confirm 6 plugins load: chroma, embedart,
+   fetchart, inline, replaygain, scrub)
 
 ## Procedure
 
@@ -37,53 +52,94 @@ Insert CD, wait ~10s for spin-up.
 whipper reads the TOC, queries MusicBrainz + AccurateRip, rips and encodes FLAC,
 verifies against AccurateRip, and writes a per-disc folder containing the FLACs
 plus a .log and .cue.
+
+**Confirmed folder-name pattern:** whipper does NOT create the per-disc folder
+directly in staging. It first creates a fixed intermediate wrapper directory,
+then the real `Artist - Title` folder one level inside that — e.g.
+`~/cd-rips/staging/album/Ry Cooder & Manuel Galbán - Mambo sinuendo/` or
+`~/cd-rips/staging/live/John Coltrane - Live at Birdland/`. **The wrapper
+folder's name varies** (`album`, `live`, and presumably others depending on
+some internal whipper categorization) — don't hardcode a name; detect it by
+descending through any chain of single-subdirectory wrappers until reaching a
+folder that actually contains files. (This is what
+`ripper_orchestrator.py`'s `rip()` does.)
+
 Expected: all tracks AccurateRip verified (Phase 0 test rip of Grant Green's
 "Feelin' the Spirit" hit confidence 17-18).
-[VERIFY ON LIVE RIP] exact flags beyond `cd rip`, and the exact folder-name
-pattern whipper produces in staging.
 
 ### Step 3: Import + tag with beets
 beets must run as root because the NFS export uses Maproot=apps; non-root writes
-are refused.
-[VERIFY ON LIVE RIP] config-under-sudo gotcha: `sudo beet` reads
-/root/.config/beets/, not your user config. Confirm the form that worked in
-Phase 0, likely an explicit config path:
-    sudo beet -c ~/.config/beets/config.yaml import ~/cd-rips/staging/<album-folder>
+are refused. **Confirmed working form** (explicit `-c` correctly overlays the
+user config rather than falling back to `/root/.config/beets/`):
+    sudo beet -c ~/.config/beets/config.yaml import ~/cd-rips/staging/<wrapper>/<Artist - Title>
 
-Known issue A (MusicBrainz autotagger): import may return zero candidates despite
-whipper writing valid disc IDs (suspected beets 2.8.0 / Python 3.14 / musicbrainzngs
-compatibility). Workaround options to test and then standardize:
-  - At the prompt, choose "Enter Id" and paste the MusicBrainz release ID or URL
-    from the album's MB page.
-  - Or import with existing tags and correct later.
-[VERIFY ON LIVE RIP] which workaround becomes the standard step.
+**Known issue A (MusicBrainz autotagger) — confirmed, and worse than
+originally suspected.** Import returns "No matching release found" even when
+manually pasting the correct MusicBrainz release ID at the "Enter Id" prompt
+(tried both as a full URL and a bare UUID; both failed identically). This
+means the automatic matching failure isn't just the autotagger algorithm
+returning zero candidates — beets' MusicBrainz lookup path is broken more
+generally (still suspected: beets 2.8.0 / Python 3.14 / musicbrainzngs
+compatibility). **"Enter Id" is not a usable workaround. The standard,
+confirmed-working workaround is "Use as-is"** (`u` at the import prompt) —
+this accepts the tags whipper already wrote into the FLAC files from its own
+independent, successful MusicBrainz TOC lookup during ripping, which are
+already correct.
 
-### Step 4: Copy log + cue (extrafiles workaround)
-Known issue B: beets-extrafiles crashes on cli_exit, so .log/.cue are NOT copied
-automatically. Copy them manually into the destination album folder on the NAS:
-    sudo cp ~/cd-rips/staging/<album-folder>/*.log \
-            ~/cd-rips/staging/<album-folder>/*.cue \
+### Step 4: Copy log + cue (extrafiles removed)
+**Known issue B — confirmed live, exactly as suspected.** beets-extrafiles
+crashes on the `cli_exit` hook with
+`AttributeError: module 'beets.library' has no attribute 'DefaultTemplateFunctions'`.
+Confirmed this crash happens *after* the real audio import/move already
+succeeds — it only breaks the plugin's own post-import log/cue copy step, not
+the rip itself. **Permanent fix applied: `extrafiles` removed from the beets
+config's plugins list entirely.** The orchestrator copies `.log`/`.cue`
+manually instead:
+    sudo cp ~/cd-rips/staging/<wrapper>/<Artist - Title>/*.log \
+            ~/cd-rips/staging/<wrapper>/<Artist - Title>/*.cue \
             "/mnt/tank/music/library/FLAC/CDRips/<Artist>/<Year - Album>/"
-[VERIFY ON LIVE RIP] confirm sudo is required here (expected yes, same Maproot reason).
+**Confirmed: sudo is required** for this copy (same Maproot reason as Step 3).
 
-### Step 5: Trigger Navidrome rescan
-[VERIFY ON LIVE RIP] current method: auto-scan interval vs manual trigger via the
-Navidrome UI/API in LXC 106 (192.168.8.60).
+### Step 5: Fetch + embed album art (new — Known issue C)
+**Discovered live:** `fetchart`/`embedart` do not fire automatically as a side
+effect of a "Use as-is" import, even though both plugins work correctly when
+invoked directly afterward. Run explicitly, targeting the album via a beets
+path query (confirmed working syntax):
+    sudo beet -c ~/.config/beets/config.yaml fetchart "path:/mnt/tank/music/library/FLAC/CDRips/<Artist>/<Year - Album>"
+This fetches art (saved as `cover.jpg` in the album folder) and embedding into
+the FLAC tags happens automatically via embedart's hook on fetchart's result
+— confirmed via `metaflac --list --block-type=PICTURE` showing a real
+embedded JPEG.
 
-### Step 6: Clean staging
+### Step 6: Trigger Navidrome rescan
+**Still open / untested.** Not yet exercised on a live rip; disabled in the
+orchestrator config (`navidrome.enabled: false`) until verified.
+[VERIFY ON LIVE RIP] current method: auto-scan interval vs manual trigger via
+the Navidrome UI/API in LXC 106 (192.168.8.60).
+
+### Step 7: Clean staging
 After the album is confirmed in the library and playing:
-    rm -rf ~/cd-rips/staging/<album-folder>
+    rm -rf ~/cd-rips/staging/<wrapper>/<Artist - Title>
+Note: deleting just the per-disc folder (not the whole wrapper) is fine —
+whipper recreates the wrapper folder itself on the next rip regardless of
+whether it's empty or absent.
 
 ## Validation checklist
-- [ ] FLACs at /mnt/tank/music/library/FLAC/CDRips/<Artist>/<Year - Album>/
-- [ ] Filenames match: NN - Artist - Title.flac (single disc)
-- [ ] Tags populated: album, albumartist, year, track, title
-- [ ] .log and .cue present in album folder
-- [ ] Album visible and playable in Navidrome
+- [x] FLACs at /mnt/tank/music/library/FLAC/CDRips/<Artist>/<Year - Album>/
+- [x] Filenames match: NN - Artist - Title.flac (single disc)
+- [ ] Tags populated: album, albumartist, year, track, title — visually spot-checked
+      on the NAS listing, not yet verified field-by-field
+- [x] .log and .cue present in album folder
+- [x] Cover art present (file + embedded in FLAC tags)
+- [ ] Album visible and playable in Navidrome — not yet confirmed (rescan step
+      still open, see Step 6)
 
-## Open items to resolve on next live rip
-1. Exact whipper invocation and staging folder-name pattern.
-2. beets config-under-sudo: settle the canonical command.
-3. MusicBrainz zero-candidates: pick and document the standard workaround.
-4. Confirm sudo needed for the log/cue copy.
-5. Navidrome rescan trigger method.
+## Open items
+1. ~~Exact whipper invocation and staging folder-name pattern.~~ Resolved (Step 2).
+2. ~~beets config-under-sudo: settle the canonical command.~~ Resolved (Step 3).
+3. ~~MusicBrainz zero-candidates: pick and document the standard workaround.~~
+   Resolved — Use as-is only (Step 3).
+4. ~~Confirm sudo needed for the log/cue copy.~~ Resolved, yes (Step 4).
+5. **Navidrome rescan trigger method.** Still open.
+6. **Tag-field-level validation and Navidrome playback confirmation.** Not yet
+   done on a live album; worth a manual pass once Navidrome rescan is sorted.
