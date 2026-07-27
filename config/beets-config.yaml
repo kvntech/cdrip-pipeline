@@ -1,0 +1,103 @@
+# Beets configuration for CD rip pipeline
+# Source of truth: ~/.config/beets/config.yaml
+
+# Where beets looks for new music to import
+# (whipper writes here, beets reads from here)
+directory: /mnt/tank/music/library/FLAC/CDRips
+
+# Beets' internal database (tracks all imported music)
+library: ~/.config/beets/library.db
+
+# Path templates: how files get organized inside `directory`
+paths:
+  default: $albumartist/$year - $album/$track - $artist - $title
+  comp: Compilations/$year - $album/$track - $artist - $title
+  albumtype:soundtrack: Soundtracks/$year - $album/$track - $artist - $title
+
+# Handle multi-disc albums: prefix track with disc number (e.g., 1-01, 2-05)
+# This kicks in automatically when disctotal > 1
+item_fields:
+  disc_and_track: |
+    if disctotal > 1:
+      return u'%d-%02d' % (disc, track)
+    else:
+      return u'%02d' % (track)
+
+# Override the default path to use disc_and_track for multi-disc releases
+# (We use a separate template so single-disc albums still get clean NN numbering)
+
+# Import behavior
+import:
+  # Move files (don't copy) from staging into the library
+  move: yes
+  # Write tag changes back to the files
+  write: yes
+  # Don't prompt for every album; use defaults when match confidence is high
+  # We'll keep this interactive for Phase 0 testing, then switch to 'no' later
+  timid: no
+  # Don't auto-import on import command without explicit path
+  autotag: yes
+  # Quiet mode — skip albums needing manual disambiguation rather than prompting
+  # Leave OFF during Phase 0 so we see what's happening; turn ON in Phase 3
+  quiet: no
+  # Resume interrupted imports
+  resume: ask
+match:
+  strong_rec_thresh: 0.10
+  medium_rec_thresh: 0.25
+  rec_gap_thresh: 0.25
+  max_rec:
+    unmatched_tracks: strong
+    missing_tracks: strong
+
+# MusicBrainz settings
+musicbrainz:
+  # Use the public MusicBrainz server
+  host: musicbrainz.org
+  # Rate limit (be a good citizen)
+  ratelimit: 1
+  ratelimit_interval: 1.0
+
+# Plugins to load
+plugins:
+  - musicbrainz    # MusicBrainz metadata lookup (autotagger)
+  - fetchart       # download album art
+  - embedart       # embed album art into FLAC tags
+  - replaygain     # calculate ReplayGain (loudness normalization metadata)
+  - scrub          # strip existing tags before writing fresh ones
+  - chroma         # acoustic fingerprinting fallback
+  - inline         # required for the disc_and_track field above
+
+# Plugin configuration
+fetchart:
+  auto: yes
+  sources:
+    - filesystem
+    - coverart
+    - itunes
+    - wikipedia
+
+embedart:
+  auto: yes
+  maxwidth: 1200
+
+extrafiles:
+  patterns:
+    logfiles:
+      - '*.log'
+    cuefiles:
+      - '*.cue'
+  paths:
+    logfiles: $albumpath/$album.log
+    cuefiles: $albumpath/$album.cue
+
+replaygain:
+  backend: ffmpeg
+  auto: yes
+  overwrite: no
+
+scrub:
+  auto: yes
+
+chroma:
+  auto: no  # only use as manual fallback; don't slow down every import
