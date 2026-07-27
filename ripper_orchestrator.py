@@ -157,64 +157,102 @@ def preflight_checks(cfg, log, dry_run) -> bool:
 # Step 1-2: stage + rip
 # ---------------------------------------------------------------------------
 
-def stage(cfg, log, dry_run) -> str:
+def stage(cfg, log, dry_run, non_interactive: bool) -> str:
     log.info("== Stage ==")
     staging = cfg["staging_dir"]
     if dry_run:
         log.info(f"[dry-run] would mkdir -p {staging}")
     else:
         os.makedirs(staging, exist_ok=True)
-    input("Insert CD, wait for spin-up, then press Enter to continue... ")
+    if non_interactive:
+        # Under udev/systemd (Phase 3) the disc-insertion event IS the
+        # trigger -- there's no TTY to wait on, and no need to wait for
+        # spin-up since udev only fires after the kernel already saw the
+        # media change.
+        log.info("Non-interactive mode: skipping 'insert CD' prompt.")
+    else:
+        input("Insert CD, wait for spin-up, then press Enter to continue... ")
     return staging
 
 
-def rip(cfg, log, dry_run) -> str:
+def _find_ripped_album_folder(staging_dir, log):
+    """Find whipper's actual per-disc output folder: whichever directory
+    under staging_dir directly contains .flac files with the newest mtime.
+
+    Confirmed live 2026-07-27 (TLC - CrazySexyCool): the previous approach --
+    diffing staging_dir's top-level entries before/after the rip, looking for
+    a "new" one -- breaks the moment whipper's wrapper folder (e.g. "album")
+    is reused across runs, since it's never actually new again after the
+    first rip ever done in that staging dir. This doesn't care how many times
+    that wrapper gets reused or what it's named; it also makes the old
+    wrapper-descent logic unnecessary, since walking the tree already lands
+    on the real leaf folder.
+    """
+    best_path = None
+    best_mtime = -1.0
+    for root, _dirs, files in os.walk(staging_dir):
+        flacs = [f for f in files if f.endswith(".flac")]
+        if not flacs:
+            continue
+        mtime = max(os.path.getmtime(os.path.join(root, f)) for f in flacs)
+        if mtime > best_mtime:
+            best_mtime = mtime
+            best_path = root
+    if best_path:
+        log.info(f"Found ripped album folder (newest .flac mtime): {best_path}")
+    return best_path
+
+
+def rip(cfg, log, dry_run, non_interactive: bool) -> str:
     """Run whipper and return the path to the album folder it created.
 
-    Folder-name pattern isn't finalized in the runbook yet
-    ([VERIFY ON LIVE RIP]), so instead of guessing the pattern this diffs the
-    staging directory's contents before/after the rip to find whatever
-    whipper actually created.
+    See _find_ripped_album_folder() for how the folder is located -- this
+    used to diff staging_dir's top-level contents before/after the rip, which
+    broke once whipper's wrapper folder got reused across runs (confirmed
+    live 2026-07-27).
     """
     log.info("== Rip (whipper) ==")
     staging = cfg["staging_dir"]
-    before = set(os.listdir(staging)) if os.path.isdir(staging) else set()
 
-    cmd = ["whipper", "cd", "rip"] + cfg.get("whipper_extra_args", [])
+    extra_args = list(cfg.get("whipper_extra_args", []))
+    cmd = ["whipper", "cd", "rip"] + extra_args
     result = run(cmd, log, dry_run, cwd=staging)
+
     if not dry_run and result.returncode != 0:
-        log.error("whipper rip failed")
-        sys.exit(1)
+        # A disc that isn't in MusicBrainz at all makes whipper fail outright
+        # rather than just returning a bad match -- confirmed live 2026-07-26
+        # (Dizzy Gillespie y Machito, before a MusicBrainz release existed for
+        # it). --unknown tells whipper to proceed without a MusicBrainz TOC
+        # match.
+        if "--unknown" in extra_args:
+            log.error("whipper rip failed even with --unknown. Giving up.")
+            sys.exit(1)
+        if non_interactive:
+            retry = True
+            log.warning("whipper rip failed. Non-interactive mode: auto-retrying "
+                        "with --unknown once.")
+        else:
+            retry = input(
+                "whipper rip failed -- possibly a disc not in MusicBrainz. "
+                "Retry with --unknown? [y/N] "
+            ).strip().lower() == "y"
+        if not retry:
+            log.error("whipper rip failed. Not retrying.")
+            sys.exit(1)
+        cmd = ["whipper", "cd", "rip", "--unknown"] + extra_args
+        result = run(cmd, log, dry_run, cwd=staging)
+        if result.returncode != 0:
+            log.error("whipper rip failed again with --unknown. Giving up.")
+            sys.exit(1)
 
     if dry_run:
         return os.path.join(staging, "<album-folder>")
 
-    after = set(os.listdir(staging))
-    new_dirs = [d for d in (after - before)
-                if os.path.isdir(os.path.join(staging, d))]
-    if len(new_dirs) != 1:
-        log.warning(f"Expected exactly 1 new folder in staging, found {new_dirs}. "
-                    "Pick manually.")
-        for i, d in enumerate(sorted(after), 1):
-            print(f"  [{i}] {d}")
-        idx = int(input("Which folder is this rip? Enter number: ")) - 1
-        chosen = sorted(after)[idx]
-    else:
-        chosen = new_dirs[0]
-
-    album_path = os.path.join(staging, chosen)
-
-    # Confirmed live 2026-07-26: whipper wraps its real per-disc output in a
-    # fixed intermediate folder (observed literal name: "album") before the
-    # actual "Artist - Title" folder. Descend through any chain of
-    # single-subdirectory wrappers so album_path ends up at the folder that
-    # actually contains the FLACs/.log/.cue, not the wrapper around it.
-    while os.path.isdir(album_path):
-        entries = os.listdir(album_path)
-        if len(entries) == 1 and os.path.isdir(os.path.join(album_path, entries[0])):
-            album_path = os.path.join(album_path, entries[0])
-        else:
-            break
+    album_path = _find_ripped_album_folder(staging, log)
+    if album_path is None:
+        log.error(f"Could not find any folder containing .flac files under {staging}. "
+                  "Leaving staging as-is for manual inspection.")
+        sys.exit(1)
 
     log.info(f"Rip staged at: {album_path}")
     return album_path
@@ -224,7 +262,7 @@ def rip(cfg, log, dry_run) -> str:
 # Step 3: import + tag with beets
 # ---------------------------------------------------------------------------
 
-def import_beets(cfg, log, dry_run, album_path: str):
+def import_beets(cfg, log, dry_run, album_path: str, non_interactive: bool):
     log.info("== Import + tag (beets) ==")
     if cfg.get("known_issue_a_reminder", False):
         log.info(
@@ -240,33 +278,38 @@ def import_beets(cfg, log, dry_run, album_path: str):
     cmd = []
     if cfg.get("beets_use_sudo", True):
         cmd.append("sudo")
-    cmd += ["beet", "-c", beets_config, "import", album_path]
+    cmd += ["beet", "-c", beets_config]
+    if non_interactive:
+        # Quiet mode never prompts: a strong match applies automatically,
+        # anything weaker falls back to whatever import.quiet_fallback says
+        # in the beets config. NOT YET VERIFIED LIVE against a real
+        # ambiguous-match disc -- see docs/phase3-runbook.md. Set
+        # `quiet_fallback: asis` there so an unresolved match still keeps
+        # whipper's own correct tags instead of being skipped.
+        cmd.append("-q")
+    cmd += ["import", album_path]
 
-    log.info(
-        "Running import interactively so you can resolve the MusicBrainz "
-        "candidate prompt yourself."
-    )
+    if non_interactive:
+        log.info("Running import in quiet/non-interactive mode (-q).")
+    else:
+        log.info(
+            "Running import interactively so you can resolve the MusicBrainz "
+            "candidate prompt yourself, if one comes up."
+        )
     if dry_run:
         run(cmd, log, dry_run)
         return
     result = subprocess.run(cmd)
     if result.returncode != 0:
-        # Confirmed live 2026-07-26: beets-extrafiles crashes with
-        # AttributeError: module 'beets.library' has no attribute
-        # 'DefaultTemplateFunctions' in its cli_exit hook (known issue B).
-        # That hook fires AFTER the real import/move already succeeded, so a
-        # non-zero exit here does NOT necessarily mean the audio import
-        # failed -- it may just be this known-broken plugin dying in its own
-        # post-import cleanup step. Don't kill the whole run on that; let the
-        # operator check and decide.
-        log.warning(
-            "beet import exited non-zero. If the traceback above is from "
-            "extrafiles' cli_exit hook (AttributeError: ...'DefaultTemplateFunctions'), "
-            "the actual audio import likely still succeeded -- that plugin just "
-            "crashes doing the .log/.cue copy this script already handles separately. "
-            "Recommended permanent fix: remove 'extrafiles' from the plugins list in "
-            "your beets config, since it's redundant with this script's copy_log_cue step."
-        )
+        # As of the 2026-07-27 fix, `extrafiles` is no longer in the plugins
+        # list (known issue B), so a non-zero exit here is NOT expected to be
+        # that old harmless cli_exit crash anymore -- treat it as a real
+        # problem.
+        log.warning("beet import exited non-zero. Check the output above.")
+        if non_interactive:
+            log.error("Non-interactive mode: stopping rather than guessing whether "
+                      "to continue.")
+            sys.exit(1)
         confirm = input(
             "Continue the pipeline anyway (destination lookup + log/cue copy + "
             "validation)? [y/N] "
@@ -280,10 +323,11 @@ def import_beets(cfg, log, dry_run, album_path: str):
 # Step 4: copy log + cue (extrafiles workaround)
 # ---------------------------------------------------------------------------
 
-def find_dest_folder(cfg, log, dry_run) -> str:
+def find_dest_folder(cfg, log, dry_run, non_interactive: bool) -> str:
     """Suggest the destination album folder by looking for whatever changed
-    most recently under library_root/cdrips_subdir, then let the user
-    confirm or override."""
+    most recently under library_root/cdrips_subdir. Interactively, ask the
+    user to confirm/override; non-interactively, only proceed on an
+    unambiguous single match."""
     library_dir = os.path.join(cfg["library_root"], cfg["cdrips_subdir"])
     if dry_run:
         return os.path.join(library_dir, "<Artist>", "<Year - Album>")
@@ -304,16 +348,26 @@ def find_dest_folder(cfg, log, dry_run) -> str:
 
     if len(candidates) == 1:
         suggestion = candidates[0]
+        if non_interactive:
+            log.info(f"Destination folder (auto-confirmed): {suggestion}")
+            return suggestion
         confirm = input(f"Destination folder: {suggestion} — correct? [Y/n] ").strip().lower()
         if confirm in ("", "y", "yes"):
             return suggestion
     elif candidates:
+        if non_interactive:
+            log.error(f"Non-interactive mode: {len(candidates)} candidate destination "
+                      f"folders found, can't disambiguate: {candidates}")
+            sys.exit(1)
         print("Multiple recently-modified album folders found:")
         for i, c in enumerate(candidates, 1):
             print(f"  [{i}] {c}")
         choice = input("Pick one, or 0 to type a path manually: ").strip()
         if choice.isdigit() and 1 <= int(choice) <= len(candidates):
             return candidates[int(choice) - 1]
+    elif non_interactive:
+        log.error("Non-interactive mode: no destination folder candidates found.")
+        sys.exit(1)
 
     return input("Enter the destination album folder path: ").strip()
 
@@ -446,16 +500,19 @@ def validate(cfg, log, dry_run, dest_folder: str):
     return ok
 
 
-def clean_staging(cfg, log, dry_run, album_path: str, keep_staging: bool):
+def clean_staging(cfg, log, dry_run, album_path: str, keep_staging: bool, non_interactive: bool):
     log.info("== Clean staging ==")
     if keep_staging:
         log.info("Skipping cleanup (--keep-staging).")
         return
     if cfg.get("prompt_before_cleanup", True) and not dry_run:
-        confirm = input(f"Delete staging folder {album_path}? [y/N] ").strip().lower()
-        if confirm != "y":
-            log.info("Cleanup skipped by user.")
-            return
+        if non_interactive:
+            log.info("Non-interactive mode: skipping cleanup confirmation, deleting staging.")
+        else:
+            confirm = input(f"Delete staging folder {album_path}? [y/N] ").strip().lower()
+            if confirm != "y":
+                log.info("Cleanup skipped by user.")
+                return
     if dry_run:
         log.info(f"[dry-run] would rm -rf {album_path}")
         return
@@ -471,6 +528,10 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="print commands, execute nothing")
     parser.add_argument("--keep-staging", action="store_true")
     parser.add_argument("--skip-navidrome", action="store_true")
+    parser.add_argument("--non-interactive", action="store_true",
+                         help="Phase 3: no prompts, no waiting on a TTY (for udev/systemd). "
+                              "Fails loudly instead of blocking wherever a human judgment "
+                              "call would normally be needed.")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -481,15 +542,15 @@ def main():
         if not args.dry_run:
             sys.exit(1)
 
-    stage(cfg, log, args.dry_run)
-    album_path = rip(cfg, log, args.dry_run)
-    import_beets(cfg, log, args.dry_run, album_path)
-    dest_folder = find_dest_folder(cfg, log, args.dry_run)
+    stage(cfg, log, args.dry_run, args.non_interactive)
+    album_path = rip(cfg, log, args.dry_run, args.non_interactive)
+    import_beets(cfg, log, args.dry_run, album_path, args.non_interactive)
+    dest_folder = find_dest_folder(cfg, log, args.dry_run, args.non_interactive)
     copy_log_cue(cfg, log, args.dry_run, album_path, dest_folder)
     fetch_art(cfg, log, args.dry_run, dest_folder)
     trigger_navidrome_rescan(cfg, log, args.dry_run, args.skip_navidrome)
     validate(cfg, log, args.dry_run, dest_folder)
-    clean_staging(cfg, log, args.dry_run, album_path, args.keep_staging)
+    clean_staging(cfg, log, args.dry_run, album_path, args.keep_staging, args.non_interactive)
 
     log.info("Done.")
 
