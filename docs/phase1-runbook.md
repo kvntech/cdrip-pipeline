@@ -17,8 +17,9 @@ implements (see `ripper_orchestrator.py`).
 - Drive: LG GP65NB60 external USB, device /dev/sr0
 - whipper config: ~/.config/whipper/whipper.conf (read offset +6, cache defeat on)
 - beets: 2.8.0 on Python 3.14.3
-  plugins: chroma, embedart, fetchart, inline, replaygain, scrub
-  (`extrafiles` removed — see Known issue B)
+  plugins: chroma, embedart, fetchart, inline, musicbrainz, replaygain, scrub
+  (`extrafiles` removed — see Known issue B; `musicbrainz` added and a bogus
+  `search_ids` import-config line removed — see Known issue A)
 - Staging (local): ~/cd-rips/staging/
 - Library (NFS from TrueNAS, Maproot=apps): /mnt/tank/music/library/FLAC/CDRips/
 - Navidrome scan root: /mnt/tank/music/library/
@@ -37,8 +38,8 @@ implements (see `ripper_orchestrator.py`).
    confirm it actually mounts.
 2. Drive present:      ls -l /dev/sr0
 3. whipper sees drive: whipper drive list
-4. beets sane:         beet version   (confirm 6 plugins load: chroma, embedart,
-   fetchart, inline, replaygain, scrub)
+4. beets sane:         beet version   (confirm 7 plugins load: chroma, embedart,
+   fetchart, inline, musicbrainz, replaygain, scrub)
 
 ## Procedure
 
@@ -73,18 +74,22 @@ are refused. **Confirmed working form** (explicit `-c` correctly overlays the
 user config rather than falling back to `/root/.config/beets/`):
     sudo beet -c ~/.config/beets/config.yaml import ~/cd-rips/staging/<wrapper>/<Artist - Title>
 
-**Known issue A (MusicBrainz autotagger) — confirmed, and worse than
-originally suspected.** Import returns "No matching release found" even when
-manually pasting the correct MusicBrainz release ID at the "Enter Id" prompt
-(tried both as a full URL and a bare UUID; both failed identically). This
-means the automatic matching failure isn't just the autotagger algorithm
-returning zero candidates — beets' MusicBrainz lookup path is broken more
-generally (still suspected: beets 2.8.0 / Python 3.14 / musicbrainzngs
-compatibility). **"Enter Id" is not a usable workaround. The standard,
-confirmed-working workaround is "Use as-is"** (`u` at the import prompt) —
-this accepts the tags whipper already wrote into the FLAC files from its own
-independent, successful MusicBrainz TOC lookup during ripping, which are
-already correct.
+**Known issue A (MusicBrainz autotagger) — RESOLVED 2026-07-27.** Import used
+to return "No matching release found" even when manually pasting the correct
+release ID at the "Enter Id" prompt. Root-caused via `beet -vv import` plus a
+direct `musicbrainzngs.search_releases()` call outside of beets (which returned
+real candidates fine, proving the network/API layer was never the problem):
+(1) the `musicbrainz` plugin was missing from `plugins:` entirely, so beets had
+zero registered metadata sources; (2) a bogus `search_ids: [mb_albumid,
+mb_trackid, mb_releasetrackid]` line under `import:` was passing those literal
+field names to beets as if they were real MBIDs, causing `Invalid MBID
+(mb_albumid)` errors. **Fix:** add `musicbrainz` to `plugins:`, delete the
+`search_ids` line. Confirmed live: the same album that used to fail now gets a
+strong automatic ID match (93.7%, MusicBrainz release
+`2c1109bb-777d-4a8c-8e9a-ad9f7d829441`) with no manual intervention. **"Use
+as-is" is no longer needed for new imports** — it remains a valid fallback only
+for discs genuinely absent from MusicBrainz (e.g. Dizzy Gillespie y Machito,
+where a new MusicBrainz release entry had to be created from scratch).
 
 ### Step 4: Copy log + cue (extrafiles removed)
 **Known issue B — confirmed live, exactly as suspected.** beets-extrafiles
@@ -137,8 +142,9 @@ whether it's empty or absent.
 ## Open items
 1. ~~Exact whipper invocation and staging folder-name pattern.~~ Resolved (Step 2).
 2. ~~beets config-under-sudo: settle the canonical command.~~ Resolved (Step 3).
-3. ~~MusicBrainz zero-candidates: pick and document the standard workaround.~~
-   Resolved — Use as-is only (Step 3).
+3. ~~MusicBrainz zero-candidates: root-caused and fixed.~~ Resolved 2026-07-27 —
+   missing `musicbrainz` plugin + bogus `search_ids` config key (Step 3). Automatic
+   matching now works; Use as-is is a fallback only, not the standard path.
 4. ~~Confirm sudo needed for the log/cue copy.~~ Resolved, yes (Step 4).
 5. **Navidrome rescan trigger method.** Still open.
 6. **Tag-field-level validation and Navidrome playback confirmation.** Not yet

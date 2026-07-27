@@ -71,7 +71,7 @@ Compilations/YYYY - Album/NN - Artist - Title.flac
   - [x] Whipper installed (Arch package)
   - [x] LG GP65NB60 characterized: cache defeat OK, read offset +6 (empirically verified, not in AccurateRip drive DB)
   - [x] Beets installed (pacman) + beets-extrafiles (pip, system-wide) — extrafiles later removed, see Known Issues
-  - [x] Beets config: path templates, match thresholds, plugins (chroma, embedart, fetchart, inline, replaygain, scrub)
+  - [x] Beets config: path templates, match thresholds, plugins (chroma, embedart, fetchart, inline, musicbrainz, replaygain, scrub)
   - [x] Test rip: Grant Green - Feelin' the Spirit (Blue Note, 2005 reissue)
     - All 6 tracks AccurateRip-verified at confidence 17-18
     - Files landed at `/mnt/tank/music/library/FLAC/CDRips/Grant Green/2005 - Feelin' the Spirit/`
@@ -87,14 +87,20 @@ Compilations/YYYY - Album/NN - Artist - Title.flac
 
 ## Known issues (carried into later phases)
 
-- **Beets autotagger returns "no candidates" for MusicBrainz lookups** despite whipper
-  writing valid MusicBrainz IDs to FLAC tags. Confirmed live: even manually pasting the
-  correct release ID at the "Enter Id" prompt (as a URL or bare UUID) still fails with
-  "No matching release found." This isn't just the autotagger algorithm returning zero
-  candidates — beets' MusicBrainz lookup path is broken more generally (still suspected:
-  beets 2.8.0 / Python 3.14 / musicbrainzngs compatibility). **"Enter Id" is not a usable
-  workaround — "Use as-is" is the only confirmed-working one**, since whipper's own
-  independent MusicBrainz lookup already wrote correct tags into the files during ripping.
+- **RESOLVED (2026-07-27) — Beets autotagger returned "no candidates" for every
+  MusicBrainz lookup.** Root cause was two stacked config problems, not the suspected
+  beets 2.8.0 / Python 3.14 / musicbrainzngs incompatibility: (1) the `musicbrainz`
+  plugin was never added to the `plugins:` list — MusicBrainz support moved out of
+  beets core into an opt-in plugin at some point, so there were zero registered
+  metadata sources to query; (2) a bogus `search_ids: [mb_albumid, mb_trackid,
+  mb_releasetrackid]` line under `import:` fed those literal field *names* to beets
+  as real MBIDs, producing `Invalid MBID (mb_albumid)` errors and breaking ID-based
+  lookup too. **Fix: add `musicbrainz` to `plugins:`, delete the `search_ids` line.**
+  Confirmed live — re-importing Grant Green's *Feelin' the Spirit* now gets a strong
+  (93.7%) automatic ID match against the correct release with zero manual
+  intervention. "Use as-is" is no longer required for new imports; it remains a
+  valid fallback only for discs genuinely absent from MusicBrainz (see the Dizzy
+  Gillespie y Machito case, Phase 2 notes).
 - **beets-extrafiles plugin crashes on `cli_exit`** with `AttributeError: module
   'beets.library' has no attribute 'DefaultTemplateFunctions'`. Confirmed live, exactly as
   suspected — the crash happens after the real audio import/move already succeeds, so it
