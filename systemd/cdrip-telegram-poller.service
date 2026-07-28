@@ -1,0 +1,16 @@
+[Unit]
+Description=cdrip-pipeline: Telegram long-poller for remote decisions
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kevin
+WorkingDirectory=/home/kevin/projects/cdrip-pipeline
+EnvironmentFile=/home/kevin/projects/cdrip-pipeline/.env
+ExecStart=/usr/bin/python3 /home/kevin/projects/cdrip-pipeline/telegram_poller.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

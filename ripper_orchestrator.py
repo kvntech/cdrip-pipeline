@@ -49,6 +49,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import notify  # Phase 4: HA Companion App notifications + remote decisions
+
 try:
     import yaml
 except ImportError:
@@ -170,6 +172,8 @@ def stage(cfg, log, dry_run, non_interactive: bool) -> str:
         # spin-up since udev only fires after the kernel already saw the
         # media change.
         log.info("Non-interactive mode: skipping 'insert CD' prompt.")
+        if not dry_run:
+            notify.notify(log, "cdrip: disc detected, starting rip.")
     else:
         input("Insert CD, wait for spin-up, then press Enter to continue... ")
     return staging
@@ -226,11 +230,27 @@ def rip(cfg, log, dry_run, non_interactive: bool) -> str:
         # match.
         if "--unknown" in extra_args:
             log.error("whipper rip failed even with --unknown. Giving up.")
+            notify.notify(log, "cdrip: whipper rip failed even with --unknown. Giving up.")
             sys.exit(1)
         if non_interactive:
-            retry = True
-            log.warning("whipper rip failed. Non-interactive mode: auto-retrying "
-                        "with --unknown once.")
+            # Phase 4: try a remote decision (actionable push, wait for a
+            # phone tap) before falling back to the old blind auto-retry.
+            # NOT YET TESTED LIVE.
+            decision = notify.ask(
+                log, cfg,
+                "cdrip: whipper rip failed (disc maybe not in MusicBrainz). "
+                "Retry with --unknown?",
+                [("RETRY", "Retry with --unknown"), ("GIVE_UP", "Give up")],
+            )
+            if decision == "RETRY":
+                retry = True
+            elif decision == "GIVE_UP":
+                retry = False
+            else:
+                retry = True
+                log.warning("No remote decision available (HA not configured, send "
+                            "failed, or no response in time). Non-interactive default: "
+                            "auto-retrying with --unknown once.")
         else:
             retry = input(
                 "whipper rip failed -- possibly a disc not in MusicBrainz. "
@@ -243,6 +263,7 @@ def rip(cfg, log, dry_run, non_interactive: bool) -> str:
         result = run(cmd, log, dry_run, cwd=staging)
         if result.returncode != 0:
             log.error("whipper rip failed again with --unknown. Giving up.")
+            notify.notify(log, "cdrip: whipper rip failed again with --unknown. Giving up.")
             sys.exit(1)
 
     if dry_run:
@@ -252,9 +273,12 @@ def rip(cfg, log, dry_run, non_interactive: bool) -> str:
     if album_path is None:
         log.error(f"Could not find any folder containing .flac files under {staging}. "
                   "Leaving staging as-is for manual inspection.")
+        notify.notify(log, "cdrip: could not find the ripped album folder after "
+                          "whipper finished. Check arch-box.")
         sys.exit(1)
 
     log.info(f"Rip staged at: {album_path}")
+    notify.notify(log, f"cdrip: rip verified, now tagging: {os.path.basename(album_path)}")
     return album_path
 
 
@@ -309,6 +333,8 @@ def import_beets(cfg, log, dry_run, album_path: str, non_interactive: bool):
         if non_interactive:
             log.error("Non-interactive mode: stopping rather than guessing whether "
                       "to continue.")
+            notify.notify(log, "cdrip: beet import failed (non-zero exit). Stopped -- "
+                              "check the log on arch-box.")
             sys.exit(1)
         confirm = input(
             "Continue the pipeline anyway (destination lookup + log/cue copy + "
@@ -317,6 +343,9 @@ def import_beets(cfg, log, dry_run, album_path: str, non_interactive: bool):
         if confirm != "y":
             log.error("Stopping at your request.")
             sys.exit(1)
+
+    if not dry_run:
+        notify.notify(log, f"cdrip: tagged, fetching art next: {os.path.basename(album_path)}")
 
 
 # ---------------------------------------------------------------------------
@@ -356,8 +385,28 @@ def find_dest_folder(cfg, log, dry_run, non_interactive: bool) -> str:
             return suggestion
     elif candidates:
         if non_interactive:
+            # Phase 4: with exactly 2 candidates we can offer both as
+            # tappable buttons (iOS actionable notifications comfortably fit
+            # 2-3). With more than that, fall through to the old
+            # fail-loudly behavior rather than truncating the choice.
+            # NOT YET TESTED LIVE.
+            if len(candidates) == 2:
+                decision = notify.ask(
+                    log, cfg,
+                    "cdrip: 2 possible destination folders found, which is correct?\n"
+                    f"1: {candidates[0]}\n2: {candidates[1]}",
+                    [("FOLDER_1", os.path.basename(candidates[0])),
+                     ("FOLDER_2", os.path.basename(candidates[1]))],
+                )
+                if decision == "FOLDER_1":
+                    return candidates[0]
+                if decision == "FOLDER_2":
+                    return candidates[1]
+                log.warning("No remote decision available for destination folder choice.")
             log.error(f"Non-interactive mode: {len(candidates)} candidate destination "
                       f"folders found, can't disambiguate: {candidates}")
+            notify.notify(log, f"cdrip: {len(candidates)} possible destination folders, "
+                              "can't disambiguate. Check arch-box.")
             sys.exit(1)
         print("Multiple recently-modified album folders found:")
         for i, c in enumerate(candidates, 1):
@@ -367,6 +416,8 @@ def find_dest_folder(cfg, log, dry_run, non_interactive: bool) -> str:
             return candidates[int(choice) - 1]
     elif non_interactive:
         log.error("Non-interactive mode: no destination folder candidates found.")
+        notify.notify(log, "cdrip: no destination folder candidates found after import. "
+                          "Check arch-box.")
         sys.exit(1)
 
     return input("Enter the destination album folder path: ").strip()
@@ -458,8 +509,10 @@ def trigger_navidrome_rescan(cfg, log, dry_run, skip_flag: bool):
         resp = requests.get(url, params=params, timeout=10)
         resp.raise_for_status()
         log.info(f"Navidrome rescan triggered: {resp.json()}")
+        notify.notify(log, "cdrip: Navidrome rescan triggered, wrapping up.")
     except requests.RequestException as e:
         log.error(f"Navidrome rescan failed: {e}")
+        notify.notify(log, f"cdrip: Navidrome rescan failed: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -497,6 +550,10 @@ def validate(cfg, log, dry_run, dest_folder: str):
     log.info("Remaining checklist items to confirm by ear/eye:")
     log.info("  - Tags populated (album, albumartist, year, track, title)")
     log.info("  - Album visible and playable in Navidrome")
+
+    status = "complete" if ok else "finished with issues -- check logs on arch-box"
+    notify.notify(log, f"cdrip: {status}: {os.path.basename(dest_folder)}")
+
     return ok
 
 
