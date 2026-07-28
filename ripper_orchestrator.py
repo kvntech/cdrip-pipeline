@@ -303,6 +303,7 @@ def import_beets(cfg, log, dry_run, album_path: str, non_interactive: bool):
     if cfg.get("beets_use_sudo", True):
         cmd.append("sudo")
     cmd += ["beet", "-c", beets_config]
+    cmd.append("import")
     if non_interactive:
         # Quiet mode never prompts: a strong match applies automatically,
         # anything weaker falls back to whatever import.quiet_fallback says
@@ -311,7 +312,7 @@ def import_beets(cfg, log, dry_run, album_path: str, non_interactive: bool):
         # `quiet_fallback: asis` there so an unresolved match still keeps
         # whipper's own correct tags instead of being skipped.
         cmd.append("-q")
-    cmd += ["import", album_path]
+    cmd.append(album_path)
 
     if non_interactive:
         log.info("Running import in quiet/non-interactive mode (-q).")
