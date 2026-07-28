@@ -12,4 +12,4 @@
 # Install: sudo cp this file to /etc/udev/rules.d/99-cdrip.rules, then
 #   sudo udevadm control --reload-rules
 
-ACTION=="change", SUBSYSTEM=="block", KERNEL=="sr0", ENV{ID_CDROM}=="1", ENV{ID_FS_TYPE}=="", ENV{DISK_MEDIA_CHANGE}=="1", TAG+="systemd", ENV{SYSTEMD_WANTS}="cdrip.service"
+ACTION=="change", SUBSYSTEM=="block", KERNEL=="sr0", ENV{ID_CDROM}=="1", ENV{ID_CDROM_MEDIA_TRACK_COUNT_AUDIO}=="?*", ENV{DISK_MEDIA_CHANGE}=="1", TAG+="systemd", ENV{SYSTEMD_WANTS}="cdrip.service"
