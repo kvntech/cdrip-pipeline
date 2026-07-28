@@ -26,7 +26,8 @@ Automated CD ripping pipeline for my homelab. Insert a CD into the external driv
 - **Ripping:** whipper (Python wrapper around cdparanoia, AccurateRip-verified)
 - **Tagging:** beets (MusicBrainz lookup, tag normalization, file moves) + explicit fetchart/embedart step
 - **Orchestration:** Python script wrapping whipper + beets (`ripper_orchestrator.py`, this project) — confirmed working end-to-end across 3 live rips
-- **Trigger:** udev rule on `/dev/sr0` insertion -> systemd service -> orchestrator (not yet built — Phase 3)
+- **Trigger:** udev rule on `/dev/sr0` insertion -> systemd service -> orchestrator — confirmed working end-to-end live
+- **Notifications:** Telegram bot (`notify.py` + `telegram_poller.py`) — milestone push notifications at each pipeline stage, plus tap-to-decide remote buttons for whipper rip failures and ambiguous destination folders
 - **Library:** Navidrome (LXC 106) scanning the NAS music library
 
 ### Hardware
@@ -88,7 +89,17 @@ Compilations/YYYY - Album/NN - Artist - Title.flac
   which started `cdrip.service`, which ran the full pipeline (rip -> tag ->
   log/cue -> art -> Navidrome rescan -> cleanup) completely unattended. Three
   real bugs were found and fixed during this testing -- see Known Issues.
-- [ ] **Phase 4:** Polish. Notifications (ntfy / Home Assistant), TUI status, full documentation.
+- [x] **Phase 4:** Remote notifications + decisions via a self-hosted Telegram bot
+  (`notify.py`, `telegram_poller.py`). Milestone pushes at each pipeline stage
+  (disc detected, rip verified, tagged, Navidrome rescanned, complete), plus
+  tap-to-decide inline-keyboard buttons for the two `--non-interactive`
+  decision points (whipper rip failure, ambiguous destination folder).
+  Confirmed working end-to-end live 2026-07-27: real disc insertions
+  triggered pushes, and a live button tap round-tripped through Telegram
+  correctly. Two unrelated real bugs were found and fixed during this
+  testing -- see Known Issues. (Originally designed around Home Assistant,
+  then ntfy; switched to Telegram to keep home-automation and CD-ripping
+  notifications on separate systems.)
 
 ## Known issues (carried into later phases)
 
@@ -151,10 +162,39 @@ Compilations/YYYY - Album/NN - Artist - Title.flac
   mount is completely healthy. Also: after editing the automount entry in `/etc/fstab`,
   `sudo systemctl daemon-reload` is needed before the automount unit exists/works.
 - **Permissions model:** beets must run as root for writes to land on the NAS (Maproot=apps on the NFS share remaps root → apps user, which owns the dataset). Confirmed `sudo beet -c ~/.config/beets/config.yaml ...` (explicit config path) correctly overlays the user's own config rather than falling back to `/root/.config/beets/`. Aligns with Phase 3's systemd service model.
-- **Navidrome rescan trigger — still open.** Not yet exercised on a live rip; disabled in
-  orchestrator config pending verification of auto-scan interval vs. manual API trigger.
+- **RESOLVED (2026-07-27) — `beet import` failed with `no such option: -q` under
+  `--non-interactive`.** The orchestrator was passing `-q` as a global flag before
+  the `import` subcommand, but beets treats `-q`/`--quiet` as an `import`-specific
+  option, not a top-level one. This silently broke every non-interactive import --
+  surfaced only once beets was updated via a routine `pacman` upgrade and its CLI
+  parsing got stricter about flag placement. **Fix: append `-q` after `import`,
+  not before it.**
+- **RESOLVED (2026-07-27) — udev rule didn't fire on mixed-mode/enhanced CDs.**
+  The rule matched on `ENV{ID_FS_TYPE}==""` as its "this is a pure audio CD"
+  signal, but mixed-mode discs (audio tracks plus a data session, common on some
+  90s CDs with bonus content) report a real filesystem (`iso9660`/`udf`) for that
+  data session, so the rule silently never matched -- `SYSTEMD_WANTS=cdrip.service`
+  never got set, and the disc just sat in the drive with nothing happening.
+  **Fix: match on `ENV{ID_CDROM_MEDIA_TRACK_COUNT_AUDIO}=="?*"` (has at least one
+  audio track) instead of inferring it from the absence of a filesystem.**
+- **OPEN — `cdrip.service` stays wedged in a "failed" state after any failure**,
+  and won't start again on a subsequent disc insertion until
+  `sudo systemctl reset-failed cdrip.service` is run manually. Discovered when a
+  disc inserted after an earlier failed run produced no activity at all --
+  `systemctl status` was just showing the stale prior failure. Not yet fixed
+  structurally (e.g. having the udev rule or a wrapper auto-reset the failed
+  state); for now, run `systemctl reset-failed` after any failed rip before
+  expecting the next disc to auto-trigger.
+- **RESOLVED — Navidrome rescan trigger.** Verified live via the Subsonic
+  `startScan`/`getScanStatus` API. Enabled in `config.yaml`; credentials moved to
+  environment variables (`NAVIDROME_USER`/`NAVIDROME_PASS` in a gitignored `.env`,
+  never committed to the repo).
 
 ## Status
 
-Phase 0, 1, and 2 complete and verified against 3 real live rips (2026-07-26). Next up:
-Phase 3 (udev + systemd automation).
+Phases 0-4 complete and verified live (most recently 2026-07-27: Phase 4 Telegram
+notifications/decisions, plus a `beet import` flag-order bug and a udev rule that
+missed mixed-mode CDs, both found and fixed live). One open gap: `cdrip.service`
+needs a manual `systemctl reset-failed` after any failure before the next disc
+will auto-trigger -- see Known Issues. Not yet started: CD tracker spreadsheet /
+barcode intake.

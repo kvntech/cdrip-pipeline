@@ -1,7 +1,7 @@
 # Phase 4 Runbook: Remote Notifications + Decisions via Telegram
 
-Status: rebuilt for Telegram 2026-07-27, NOT yet tested live. Every step
-below needs to be verified live, same as every other phase in this project.
+Status: verified live 2026-07-27 -- all 4 test steps and a real disc insertion
+confirmed the whole flow end to end.
 
 ## What this adds
 
